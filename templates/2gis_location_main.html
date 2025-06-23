@@ -1,0 +1,72 @@
+{% extends "layouts/module_admin.html" %}
+{% block breadcrumb %}
+<li class="breadcrumb-item"><a href="Friends2GIS">{{ _('Friends2GIS')}}</a></li>
+{% endblock %}
+{% block module %}
+  <button type="button" class="btn btn-primary text-nowrap" data-bs-toggle="modal" data-bs-target="#exampleModal">
+    <span class="fas fa-gear me-2"></span>
+    {{ _('Settings')}}
+  </button>
+    <!-- Модальное окно с настройками -->
+    <div class="modal fade" id="exampleModal" tabindex="-1" aria-labelledby="exampleModalLabel" aria-hidden="true">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <form  method="POST">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="exampleModalLabel">{{ _('Settings')}}</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                  {{ form.hidden_tag() }}
+                  <div class="mb-3">
+                    <label class="form-label">{{ _('Token user') }}</label>
+                    {{ form.token(class="form-control") }}
+                  </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">{{ _('Close')}}</button>
+                    <button type="submit" class="btn btn-primary">{{ _('Submit')}}</button>
+                </div>
+                </form>
+            </div>
+        </div>
+    </div>
+   {{ _('Last update')}}: {{last_update}}
+    <table class="table">
+        <thead>
+          <tr>
+            <th scope="col">{{ _('Name')}}</th>
+            <th scope="col">{{ _('Position')}}</th>
+            <th scope="col">{{ _('Speed')}}</th>
+            <th scope="col">{{ _('Accuracy')}}</th>
+            <th scope="col">{{ _('Battery')}}</th>
+            <th scope="col">{{ _('Last update')}}</th>
+            <th scope="col">{{ _('GPSTracker')}}</th>
+            <th scope="col">&nbsp;</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for item in locations %}
+          <tr>
+            <td><img src="{{item.image}}" class="me-3" style="border-radius: 0 50% 50%;" title="{{item.id_user}}" height="30px" onerror="this.src='/Friends2GIS/static/Friends2GIS.png'">{{item.name}}</td>
+            <td>{{item.lat}},{{item.lng}}</td>
+            <td>{{item.speed}}</td>
+            <td>{{item.accuracy}}</td>
+            <td>{% if item.battery_charging%}<i class="fas fa-bolt me-2 text-danger"> </i>{%endif%}{{item.battery_level}}%</td>
+            <td>{{item.last_update}}</td>
+            <td>          
+              {%if item.sendtogps%}
+              <span class="far fa-check-circle text-success panel_icon"></span>
+              {%else%}
+              <span class="far fa-times-circle text-danger panel_icon"></span>
+              {%endif%}
+            </td>
+            <td width="1%" nowrap>
+                <a href="?op=user_edit&id={{item.id}}" class="btn btn-primary btn-sm" title="{{ _('Edit')}}"><i class="fas fa-edit"></i></a>
+                <a href="?op=user_delete&id={{item.id}}" onClick="return confirm('Are you sure?')" class="btn btn-danger btn-sm" title="{{ _('Delete')}}"><i class="fas fa-trash"></i></a>
+             </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+    </table>
+{% endblock %}
