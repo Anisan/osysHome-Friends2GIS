@@ -22,6 +22,10 @@
                     <label class="form-label">{{ _('Token user') }}</label>
                     {{ form.token(class="form-control") }}
                   </div>
+                  <div class="mb-3">
+                    <label class="form-label">{{ _('Min update interval (sec)') }}</label>
+                    {{ form.min_update_interval(class="form-control") }}
+                  </div>
                 </div>
                 <div class="modal-footer">
                     <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">{{ _('Close')}}</button>
@@ -49,7 +53,7 @@
           {% for item in locations %}
           <tr>
             <td><img src="{{item.image}}" class="me-3" style="border-radius: 0 50% 50%;" title="{{item.id_user}}" height="30px" onerror="this.src='/Friends2GIS/static/Friends2GIS.png'">{{item.name}}</td>
-            <td>{{item.lat}},{{item.lng}}</td>
+            <td>{{item.lng}},{{item.lat}}</td>
             <td>{{item.speed}}</td>
             <td>{{item.accuracy}}</td>
             <td>{% if item.battery_charging%}<i class="fas fa-bolt me-2 text-danger"> </i>{%endif%}{{item.battery_level}}%</td>

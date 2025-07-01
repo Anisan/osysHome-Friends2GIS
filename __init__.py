@@ -13,6 +13,7 @@ from plugins.Friends2GIS.forms.SettingsForm import SettingsForm
 from plugins.Friends2GIS.forms.FriendLocationForm import FriendLocationForm
 from app.core.lib.common import addNotify, callPluginFunction
 from app.core.lib.constants import CategoryNotify
+from app.extensions import cache
 
 class Friends2GIS(BasePlugin):
 
@@ -28,6 +29,7 @@ class Friends2GIS(BasePlugin):
         self.thread = None
         self.reconnect_interval = 5  # Задержка переподключения (секунды)
         self.is_running = False
+        self.viewport = None
 
     def initialization(self):
         self.last_update = None
@@ -36,12 +38,44 @@ class Friends2GIS(BasePlugin):
             self.logger.warning("Please set token in config")
             addNotify("Empty TOKEN", "Please set token in config", CategoryNotify.Error, self.name)
             return
+
+        coordinates = []
+        with session_scope() as session:
+            users = session.query(FriendLocation).all()
+            for user in users:
+                coordinates.append((user.lat, user.lng))
+
+        self.viewport = self.calculate_viewport(coordinates, padding=0.1)
         self.connect()
+
+    def calculate_viewport(self, coordinates, padding=0.1):
+        if not coordinates:
+            return {
+                "topLeft": {"lon": 0, "lat": 0},
+                "bottomRight": {"lon": 0, "lat": 0}
+            }
+
+        # Извлекаем все долготы и широты
+        lats, lons = zip(*coordinates)  # Распаковываем список кортежей в два списка
+
+        min_lon, max_lon = min(lons), max(lons)
+        min_lat, max_lat = min(lats), max(lats)
+
+        return {
+            "topLeft": {
+                "lon": min_lon - padding,
+                "lat": max_lat + padding
+            },
+            "bottomRight": {
+                "lon": max_lon + padding,
+                "lat": min_lat - padding
+            }
+        }
 
     def connect(self):
         if self.is_running:
             return
-        
+
         token = self.config.get("token")
         ws_url = f"wss://zond.api.2gis.ru/api/1.1/user/ws?appVersion=6.31.0&channels=markers,sharing,routes&token={token}"
         self.is_running = True
@@ -96,7 +130,7 @@ class Friends2GIS(BasePlugin):
             elif type_message == "friendState":
                 self.update_state(payload)
                 self.last_update = get_now_to_utc()
-                pass
+                self.viewportChanged(payload["location"])
         except json.JSONDecodeError as ex:
             self.logger.exception(ex)
         except Exception as ex:
@@ -114,8 +148,59 @@ class Friends2GIS(BasePlugin):
 
     def on_open(self, ws):
         self.logger.info("### Подключено к серверу 2GIS ###")
-        # Можно отправить начальное сообщение (если требуется)
-        # ws.send(json.dumps({"action": "subscribe"}))
+        sharers = []
+        with session_scope() as session:
+            users = session.query(FriendLocation).all()
+            for user in users:
+                sharers.append(str(user.id_user))
+        payload = {"type":"bindRoutes","payload":{"sharers":sharers}}
+        self.sendPayload(payload)
+        payload = {"type":"viewportChanged","payload":{"viewport":self.viewport,"zoom":15}}
+        self.sendPayload(payload)
+
+    def expand_viewport_if_needed(self, point, padding=0.1):
+        top_left = self.viewport["topLeft"]
+        bottom_right = self.viewport["bottomRight"]
+        lon, lat = point["lon"], point["lat"]
+        # Проверяем, находится ли точка внутри viewport
+        is_inside = (
+            (bottom_right["lon"] >= lon >= top_left["lon"]) and
+            (top_left["lat"] >= lat >= bottom_right["lat"])
+        )
+        if is_inside:
+            return False  # Не нужно расширять
+        # Вычисляем текущие размеры viewport
+        lon_size = bottom_right["lon"] - top_left["lon"]
+        lat_size = top_left["lat"] - bottom_right["lat"]
+        # Добавляем запас (padding)
+        lon_padding = lon_size * padding
+        lat_padding = lat_size * padding
+        # Расширяем границы, чтобы включить точку + запас
+        new_top_left = {
+            "lon": min(top_left["lon"], lon - lon_padding),
+            "lat": max(top_left["lat"], lat + lat_padding)
+        }
+        new_bottom_right = {
+            "lon": max(bottom_right["lon"], lon + lon_padding),
+            "lat": min(bottom_right["lat"], lat - lat_padding)
+        }
+        self.viewport = {
+            "topLeft": new_top_left,
+            "bottomRight": new_bottom_right
+        }
+        return True
+
+    def viewportChanged(self,location):
+        update = self.expand_viewport_if_needed(location)
+        if self.ws and update:
+            # {"type":"viewportChanged","payload":{"viewport":{"topLeft":{"lon":49.66339149419425,"lat":58.58453094647541},"bottomRight":{"lon":49.69966481183402,"lat":58.555611780572974}},"zoom":15}}
+            payload = {"type":"viewportChanged","payload":{"viewport":self.viewport,"zoom":15}}
+            self.sendPayload(payload)
+
+    def sendPayload(self, payload):
+        if self.ws:
+            self.logger.debug("Send: " + json.dumps(payload))
+            self.ws.send(json.dumps(payload))
 
     def admin(self, request):
         op = request.args.get("op", None)
@@ -142,15 +227,17 @@ class Friends2GIS(BasePlugin):
         settings = SettingsForm()
         if request.method == 'GET':
             settings.token.data = self.config.get('token','')
+            settings.min_update_interval.data = self.config.get("min_update_interval", 30)
         else:
             if settings.validate_on_submit():
                 self.config["token"] = settings.token.data
+                self.config["min_update_interval"] = settings.min_update_interval.data
                 self.saveConfig()
                 self.disconnect()
                 self.connect()
                 return redirect(self.name)
 
-        locations = FriendLocation.query.all()
+        locations = FriendLocation.query.order_by(FriendLocation.name).all()
         locations = [row2dict(location) for location in locations]
 
         content = {
@@ -180,15 +267,27 @@ class Friends2GIS(BasePlugin):
                 session.commit()
 
     def update_state(self, state):
+
+        user_id = state["id"]
+        last_seen = state["lastSeen"]
+        last_seen_dt = datetime.datetime.fromtimestamp(last_seen / 1000)
+        min_update_interval = self.config.get("min_update_interval", 30)
+
+        # Проверяем кэш: если обновляли недавно — пропускаем
+        last_cached_update = cache.get(self.name + "_" + user_id)
+        if last_cached_update and (last_seen_dt - last_cached_update).total_seconds() < min_update_interval:
+            return
+
         with session_scope() as session:
             rec = session.query(FriendLocation).where(FriendLocation.id_user == state["id"]).one_or_none()
             if not rec:
                 return
-            last_seen = state["lastSeen"]
-            last_seen_dt = datetime.datetime.fromtimestamp(last_seen / 1000)
+
             target_date = rec.last_update if rec.last_update else datetime.datetime.now()
             if target_date == last_seen_dt:
                 return
+
+            cache.set(self.name + "_" + user_id, last_seen_dt)
 
             rec.last_update = convert_local_to_utc(last_seen_dt)
             location = state["location"]
@@ -197,13 +296,17 @@ class Friends2GIS(BasePlugin):
             if rec.lat == location['lat'] and rec.lng == location['lon'] and rec.battery_level == int(battery['level'] * 100):
                 return
 
+            if rec.speed:
+                rec.speed = location["speed"]
+            else:
+                rec.speed = self.get_speed(rec, location, last_seen_dt)
+
             rec.lat = location['lat']
             rec.lng = location['lon']
             if location['accuracy']:
                 rec.accuracy = location['accuracy']
-            rec.speed = location["speed"]
-            
-            rec.battery_level = battery['level'] * 100
+
+            rec.battery_level = int(battery['level'] * 100)
             rec.battery_charging = 1 if battery['isCharging'] else 0
 
             if rec.sendtogps:
@@ -223,12 +326,8 @@ class Friends2GIS(BasePlugin):
 
             session.commit()
 
-    def get_speed(self, last: FriendLocation, new):
+    def get_speed(self, last: FriendLocation, new, time_new):
         time_last = last.last_update
-        if new['timestamp'] != '':
-            time_new = convert_local_to_utc(datetime.datetime.fromtimestamp(int(new['timestamp']) / 1000))
-        else:
-            time_new = get_now_to_utc()
         if not last.lat or not last.lng:
             return 0
         dist = self.calculate_the_distance(last.lat, last.lng, new['lat'], new['lon'])
