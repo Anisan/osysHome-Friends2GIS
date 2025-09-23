@@ -3,7 +3,7 @@ import threading
 import json
 import math
 import time
-from websocket import WebSocketApp, WebSocketConnectionClosedException
+from websocket import WebSocketApp, WebSocketConnectionClosedException, WebSocketBadStatusException
 from flask import redirect
 from sqlalchemy import delete
 from app.core.main.BasePlugin import BasePlugin
@@ -22,7 +22,7 @@ class Friends2GIS(BasePlugin):
         self.title = "Friends2GIS"
         self.description = """Get location from 2GIS Friends"""
         self.category = "App"
-        self.version = "0.1"
+        self.version = "0.2"
         self.actions = []
         self.author = "Eraser"
         self.ws = None
@@ -138,6 +138,22 @@ class Friends2GIS(BasePlugin):
 
     def on_error(self, ws, error):
         self.logger.error(f"Ошибка: {error}")
+        
+        if isinstance(error, WebSocketBadStatusException):
+            # Это ошибка HTTP статуса при рукопожатии
+            status_code = getattr(error, 'status_code', None)
+            if status_code == 401:
+                self.logger.error("Ошибка авторизации: 401 Unauthorized")
+                # Обработка ошибки авторизации
+                self.reconnect_interval = 600
+                addNotify("Error 2GIS", "Ошибка авторизации: 401 Unauthorized",CategoryNotify.Error,self.name)
+            elif status_code == 403:
+                self.logger.error("Доступ запрещён: 403 Forbidden")
+                self.reconnect_interval = 600
+                addNotify("Error 2GIS", "Ошибка авторизации: 403 Forbidden",CategoryNotify.Error,self.name)
+            else:
+                self.logger.error(f"Неизвестный HTTP статус: {status_code}")
+                self.reconnect_interval = 60
 
     def on_close(self, ws, close_status_code, close_msg):
         self.logger.warning("### Соединение закрыто ###")
@@ -148,6 +164,7 @@ class Friends2GIS(BasePlugin):
 
     def on_open(self, ws):
         self.logger.info("### Подключено к серверу 2GIS ###")
+        self.reconnect_interval = 5
         sharers = []
         with session_scope() as session:
             users = session.query(FriendLocation).all()
@@ -163,10 +180,7 @@ class Friends2GIS(BasePlugin):
         bottom_right = self.viewport["bottomRight"]
         lon, lat = point["lon"], point["lat"]
         # Проверяем, находится ли точка внутри viewport
-        is_inside = (
-            (bottom_right["lon"] >= lon >= top_left["lon"]) and
-            (top_left["lat"] >= lat >= bottom_right["lat"])
-        )
+        is_inside = (bottom_right["lon"] >= lon >= top_left["lon"]) and (top_left["lat"] >= lat >= bottom_right["lat"])
         if is_inside:
             return False  # Не нужно расширять
         # Вычисляем текущие размеры viewport
@@ -233,6 +247,7 @@ class Friends2GIS(BasePlugin):
                 self.config["token"] = settings.token.data
                 self.config["min_update_interval"] = settings.min_update_interval.data
                 self.saveConfig()
+                self.reconnect_interval = 5
                 self.disconnect()
                 self.connect()
                 return redirect(self.name)
