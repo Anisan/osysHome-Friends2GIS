@@ -1,6 +1,15 @@
 {
+  "Are you sure?": "Вы уверены?",
   "Friends2GIS": "Друзья 2GIS",
   "Min update interval (sec)": "Минимальный интервал обновления (сек)",
   "Position": "Местоположение",
-  "Token user": "Токен пользователя"
+  "Token user": "Токен пользователя",
+  "WebSocket 2GIS Friends (zond.api.2gis.ru)": "WebSocket 2GIS «Друзья» (zond.api.2gis.ru)",
+  "WS status no token": "WebSocket: нет токена",
+  "WS status connecting": "WebSocket: подключение…",
+  "WS status connected": "WebSocket: подключено",
+  "WS status reconnecting": "WebSocket: переподключение…",
+  "WS status error auth": "WebSocket: ошибка авторизации",
+  "WS status disconnected": "WebSocket: отключено",
+  "Toggle GPS forwarding": "Вкл/выкл пересылку в GpsTracker"
 }

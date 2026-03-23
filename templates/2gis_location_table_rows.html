@@ -1,0 +1,22 @@
+{% for item in locations %}
+<tr>
+  <td><img src="{{item.image}}" class="me-3" style="border-radius: 0 50% 50%;" title="{{item.id_user}}" height="30px" onerror="this.src='/Friends2GIS/static/Friends2GIS.png'">{{item.name}}</td>
+  <td>{{item.lng}},{{item.lat}}</td>
+  <td>{{item.speed}}</td>
+  <td>{{item.accuracy}}</td>
+  <td>{% if item.battery_charging%}<i class="fas fa-bolt me-2 text-danger"> </i>{%endif%}{{item.battery_level}}%</td>
+  <td>{{item.last_update}}</td>
+  <td>
+    <button type="button" class="btn btn-link btn-sm p-0 f2g-toggle-gps border-0 text-decoration-none" data-id="{{item.id}}" title="{{ _('Toggle GPS forwarding') }}">
+      {%if item.sendtogps%}
+      <span class="far fa-check-circle text-success f2g-gps-icon"></span>
+      {%else%}
+      <span class="far fa-times-circle text-danger f2g-gps-icon"></span>
+      {%endif%}
+    </button>
+  </td>
+  <td width="1%" nowrap>
+    <a href="?op=user_delete&id={{item.id}}" class="btn btn-danger btn-sm" onclick="return confirm('{{ _('Are you sure?') }}');" title="{{ _('Delete')}}"><i class="fas fa-trash"></i></a>
+  </td>
+</tr>
+{% endfor %}

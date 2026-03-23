@@ -1,6 +1,15 @@
 {
+  "Are you sure?": "Are you sure?",
   "Friends2GIS": "Friends2GIS",
   "Min update interval (sec)": "Min update interval (sec)",
   "Position": "Position",
-  "Token user": "Token user"
+  "Token user": "Token user",
+  "WebSocket 2GIS Friends (zond.api.2gis.ru)": "WebSocket 2GIS Friends (zond.api.2gis.ru)",
+  "WS status no token": "WebSocket: no token",
+  "WS status connecting": "WebSocket: connecting…",
+  "WS status connected": "WebSocket: connected",
+  "WS status reconnecting": "WebSocket: reconnecting…",
+  "WS status error auth": "WebSocket: auth error",
+  "WS status disconnected": "WebSocket: disconnected",
+  "Toggle GPS forwarding": "Toggle GPS forwarding"
 }

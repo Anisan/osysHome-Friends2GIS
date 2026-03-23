@@ -4,13 +4,12 @@ import json
 import math
 import time
 from websocket import WebSocketApp, WebSocketConnectionClosedException, WebSocketBadStatusException
-from flask import redirect
+from flask import redirect, jsonify
 from sqlalchemy import delete
 from app.core.main.BasePlugin import BasePlugin
 from app.database import session_scope, get_now_to_utc, row2dict, convert_local_to_utc, convert_utc_to_local
 from plugins.Friends2GIS.models import FriendLocation
 from plugins.Friends2GIS.forms.SettingsForm import SettingsForm
-from plugins.Friends2GIS.forms.FriendLocationForm import FriendLocationForm
 from app.core.lib.common import addNotify, callPluginFunction
 from app.core.lib.constants import CategoryNotify
 from app.extensions import cache
@@ -22,7 +21,7 @@ class Friends2GIS(BasePlugin):
         self.title = "Friends2GIS"
         self.description = """Get location from 2GIS Friends"""
         self.category = "App"
-        self.version = "0.2"
+        self.version = "0.3"
         self.actions = []
         self.author = "Eraser"
         self.ws = None
@@ -30,11 +29,23 @@ class Friends2GIS(BasePlugin):
         self.reconnect_interval = 5  # Задержка переподключения (секунды)
         self.is_running = False
         self.viewport = None
+        self._ws_lock = threading.Lock()
+        # no_token | connecting | connected | reconnecting | disconnected | error_auth
+        self.ws_status = "no_token"
+
+    def _set_ws_status(self, status):
+        with self._ws_lock:
+            self.ws_status = status
+
+    def get_ws_status(self):
+        with self._ws_lock:
+            return self.ws_status
 
     def initialization(self):
         self.last_update = None
         token = self.config.get("token")
         if not token:
+            self._set_ws_status("no_token")
             self.logger.warning("Please set token in config")
             addNotify("Empty TOKEN", "Please set token in config", CategoryNotify.Error, self.name)
             return
@@ -77,6 +88,7 @@ class Friends2GIS(BasePlugin):
             return
 
         token = self.config.get("token")
+        self._set_ws_status("connecting")
         ws_url = f"wss://zond.api.2gis.ru/api/1.1/user/ws?appVersion=6.31.0&channels=markers,sharing,routes&token={token}"
         self.is_running = True
         self.ws = WebSocketApp(
@@ -100,10 +112,13 @@ class Friends2GIS(BasePlugin):
                 self.ws.run_forever()
             except WebSocketConnectionClosedException:
                 self.logger.warning("Соединение разорвано. Переподключение...")
-                time.sleep(self.reconnect_interval)
             except Exception as e:
                 self.logger.exception(f"Критическая ошибка: {e}")
                 break
+            if self.is_running:
+                self._set_ws_status("reconnecting")
+                self.logger.info(f"Попытка переподключения через {self.reconnect_interval} сек...")
+                time.sleep(self.reconnect_interval)
 
     def disconnect(self):
         """Корректная остановка клиента."""
@@ -112,6 +127,7 @@ class Friends2GIS(BasePlugin):
             self.ws.close()
         if self.thread:
             self.thread.join()
+        self._set_ws_status("disconnected")
         self.logger.info("WebSocket остановлен")
 
     def on_message(self, ws, message):
@@ -143,26 +159,30 @@ class Friends2GIS(BasePlugin):
             # Это ошибка HTTP статуса при рукопожатии
             status_code = getattr(error, 'status_code', None)
             if status_code == 401:
+                self._set_ws_status("error_auth")
                 self.logger.error("Ошибка авторизации: 401 Unauthorized")
                 # Обработка ошибки авторизации
                 self.reconnect_interval = 600
                 addNotify("Error 2GIS", "Ошибка авторизации: 401 Unauthorized",CategoryNotify.Error,self.name)
             elif status_code == 403:
+                self._set_ws_status("error_auth")
                 self.logger.error("Доступ запрещён: 403 Forbidden")
                 self.reconnect_interval = 600
                 addNotify("Error 2GIS", "Ошибка авторизации: 403 Forbidden",CategoryNotify.Error,self.name)
             else:
+                self._set_ws_status("disconnected")
                 self.logger.error(f"Неизвестный HTTP статус: {status_code}")
                 self.reconnect_interval = 60
+        else:
+            self._set_ws_status("disconnected")
 
     def on_close(self, ws, close_status_code, close_msg):
         self.logger.warning("### Соединение закрыто ###")
         if self.is_running:
-            self.logger.info(f"Попытка переподключения через {self.reconnect_interval} сек...")
-            time.sleep(self.reconnect_interval)
-            self.connect()
+            self._set_ws_status("reconnecting")
 
     def on_open(self, ws):
+        self._set_ws_status("connected")
         self.logger.info("### Подключено к серверу 2GIS ###")
         self.reconnect_interval = 5
         sharers = []
@@ -219,16 +239,21 @@ class Friends2GIS(BasePlugin):
     def admin(self, request):
         op = request.args.get("op", None)
 
-        if op == "user_edit":
-            id = int(request.args.get("id"))
-            with session_scope() as session:
-                location = session.get(FriendLocation, id)
-                form = FriendLocationForm(obj=location)
-                if form.validate_on_submit():
-                    form.populate_obj(location)
+        if op == "ws_status" and request.method == "GET":
+            return jsonify({"status": self.get_ws_status()})
+
+        if op == "toggle_sendtogps" and request.method == "POST":
+            try:
+                id = int(request.values.get("id"))
+                with session_scope() as session:
+                    location = session.get(FriendLocation, id)
+                    if not location:
+                        return jsonify({"success": False}), 404
+                    location.sendtogps = not location.sendtogps
                     session.commit()
-                    return redirect(self.name)
-            return self.render("2gis_location_user.html", {"form": form})
+                    return jsonify({"success": True, "sendtogps": location.sendtogps})
+            except (ValueError, TypeError):
+                return jsonify({"success": False}), 400
 
         if op == "user_delete":
             id = int(request.args.get("id"))
@@ -250,7 +275,23 @@ class Friends2GIS(BasePlugin):
                 self.reconnect_interval = 5
                 self.disconnect()
                 self.connect()
+                if request.headers.get("X-Requested-With") == "XMLHttpRequest":
+                    locations = FriendLocation.query.order_by(FriendLocation.name).all()
+                    locations = [row2dict(loc) for loc in locations]
+                    lu = convert_utc_to_local(self.last_update)
+                    table_html = self.render("2gis_location_table_rows.html", {"locations": locations})
+                    return jsonify({
+                        "success": True,
+                        "ws_status": self.get_ws_status(),
+                        "last_update": str(lu) if lu is not None else "",
+                        "table_rows_html": table_html,
+                    })
                 return redirect(self.name)
+            elif request.headers.get("X-Requested-With") == "XMLHttpRequest":
+                return jsonify({
+                    "success": False,
+                    "errors": {k: v for k, v in settings.errors.items() if v},
+                }), 400
 
         locations = FriendLocation.query.order_by(FriendLocation.name).all()
         locations = [row2dict(location) for location in locations]
@@ -258,7 +299,8 @@ class Friends2GIS(BasePlugin):
         content = {
             'locations': locations,
             'form': settings,
-            'last_update': convert_utc_to_local(self.last_update)
+            'last_update': convert_utc_to_local(self.last_update),
+            'ws_status': self.get_ws_status(),
         }
         return self.render('2gis_location_main.html', content)
 

@@ -3,15 +3,28 @@
 <li class="breadcrumb-item"><a href="Friends2GIS">{{ _('Friends2GIS')}}</a></li>
 {% endblock %}
 {% block module %}
+  <div class="d-flex flex-wrap align-items-center gap-2 mb-3">
   <button type="button" class="btn btn-primary text-nowrap" data-bs-toggle="modal" data-bs-target="#exampleModal">
     <span class="fas fa-gear me-2"></span>
     {{ _('Settings')}}
   </button>
+  <span id="f2g-ws-badge"
+        class="badge {% if ws_status == 'connected' %}bg-success{% elif ws_status in ['connecting', 'reconnecting'] %}bg-warning text-dark{% elif ws_status == 'error_auth' %}bg-danger{% else %}bg-secondary{% endif %}"
+        title="{{ _('WebSocket 2GIS Friends (zond.api.2gis.ru)') }}">
+    {% if ws_status == 'no_token' %}{{ _('WS status no token') }}
+    {% elif ws_status == 'connecting' %}{{ _('WS status connecting') }}
+    {% elif ws_status == 'connected' %}{{ _('WS status connected') }}
+    {% elif ws_status == 'reconnecting' %}{{ _('WS status reconnecting') }}
+    {% elif ws_status == 'error_auth' %}{{ _('WS status error auth') }}
+    {% elif ws_status == 'disconnected' %}{{ _('WS status disconnected') }}
+    {% else %}{{ ws_status }}{% endif %}
+  </span>
+  </div>
     <!-- Модальное окно с настройками -->
     <div class="modal fade" id="exampleModal" tabindex="-1" aria-labelledby="exampleModalLabel" aria-hidden="true">
         <div class="modal-dialog">
             <div class="modal-content">
-                <form  method="POST">
+                <form id="f2g-settings-form" method="POST">
                 <div class="modal-header">
                     <h5 class="modal-title" id="exampleModalLabel">{{ _('Settings')}}</h5>
                     <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
@@ -35,8 +48,8 @@
             </div>
         </div>
     </div>
-   {{ _('Last update')}}: {{last_update}}
-    <table class="table">
+   <span id="f2g-last-update">{{ _('Last update')}}: {{last_update}}</span>
+    <table class="table" id="f2g-users-table">
         <thead>
           <tr>
             <th scope="col">{{ _('Name')}}</th>
@@ -49,7 +62,7 @@
             <th scope="col">&nbsp;</th>
           </tr>
         </thead>
-        <tbody>
+        <tbody id="f2g-table-body">
           {% for item in locations %}
           <tr>
             <td><img src="{{item.image}}" class="me-3" style="border-radius: 0 50% 50%;" title="{{item.id_user}}" height="30px" onerror="this.src='/Friends2GIS/static/Friends2GIS.png'">{{item.name}}</td>
@@ -58,19 +71,131 @@
             <td>{{item.accuracy}}</td>
             <td>{% if item.battery_charging%}<i class="fas fa-bolt me-2 text-danger"> </i>{%endif%}{{item.battery_level}}%</td>
             <td>{{item.last_update}}</td>
-            <td>          
-              {%if item.sendtogps%}
-              <span class="far fa-check-circle text-success panel_icon"></span>
-              {%else%}
-              <span class="far fa-times-circle text-danger panel_icon"></span>
-              {%endif%}
+            <td>
+              <button type="button" class="btn btn-link btn-sm p-0 f2g-toggle-gps border-0 text-decoration-none" data-id="{{item.id}}" title="{{ _('Toggle GPS forwarding') }}">
+                {%if item.sendtogps%}
+                <span class="far fa-check-circle text-success f2g-gps-icon"></span>
+                {%else%}
+                <span class="far fa-times-circle text-danger f2g-gps-icon"></span>
+                {%endif%}
+              </button>
             </td>
             <td width="1%" nowrap>
-                <a href="?op=user_edit&id={{item.id}}" class="btn btn-primary btn-sm" title="{{ _('Edit')}}"><i class="fas fa-edit"></i></a>
-                <a href="?op=user_delete&id={{item.id}}" onClick="return confirm('Are you sure?')" class="btn btn-danger btn-sm" title="{{ _('Delete')}}"><i class="fas fa-trash"></i></a>
+                <a href="?op=user_delete&id={{item.id}}" class="btn btn-danger btn-sm" onclick="return confirm('{{ _('Are you sure?') }}');" title="{{ _('Delete')}}"><i class="fas fa-trash"></i></a>
              </td>
           </tr>
           {% endfor %}
         </tbody>
     </table>
+<script>
+(function () {
+  var badge = document.getElementById('f2g-ws-badge');
+  var lastUpdateLabel = {{ _('Last update')|tojson }};
+  var labels = {
+    no_token: {{ _('WS status no token')|tojson }},
+    connecting: {{ _('WS status connecting')|tojson }},
+    connected: {{ _('WS status connected')|tojson }},
+    reconnecting: {{ _('WS status reconnecting')|tojson }},
+    error_auth: {{ _('WS status error auth')|tojson }},
+    disconnected: {{ _('WS status disconnected')|tojson }}
+  };
+  function applyStatus(s) {
+    if (!badge) return;
+    var cls = 'badge bg-secondary';
+    if (s === 'connected') cls = 'badge bg-success';
+    else if (s === 'connecting' || s === 'reconnecting') cls = 'badge bg-warning text-dark';
+    else if (s === 'error_auth') cls = 'badge bg-danger';
+    badge.className = cls;
+    badge.textContent = labels[s] || s;
+  }
+  function poll() {
+    fetch('?op=ws_status', { headers: { 'Accept': 'application/json' } })
+      .then(function (r) { return r.json(); })
+      .then(function (d) { if (d && d.status) applyStatus(d.status); })
+      .catch(function () {});
+  }
+  setInterval(poll, 8000);
+  poll();
+
+  document.getElementById('f2g-users-table')?.addEventListener('click', function (e) {
+    var btn = e.target.closest('.f2g-toggle-gps');
+    if (!btn) return;
+    e.preventDefault();
+    var id = btn.getAttribute('data-id');
+    if (!id) return;
+    btn.disabled = true;
+    var fd = new FormData();
+    fd.append('id', id);
+    var csrf = document.querySelector('[name="csrf_token"]');
+    if (csrf) fd.append('csrf_token', csrf.value);
+    fetch(window.location.pathname + '?op=toggle_sendtogps', {
+      method: 'POST',
+      body: fd,
+      headers: { 'X-Requested-With': 'XMLHttpRequest' }
+    }).then(function (r) { return r.json(); }).then(function (data) {
+      if (data.success) {
+        var icon = btn.querySelector('.f2g-gps-icon');
+        if (icon) {
+          if (data.sendtogps) {
+            icon.className = 'far fa-check-circle text-success f2g-gps-icon';
+          } else {
+            icon.className = 'far fa-times-circle text-danger f2g-gps-icon';
+          }
+        }
+      }
+    }).finally(function () { btn.disabled = false; });
+  });
+
+  var form = document.getElementById('f2g-settings-form');
+  var modalEl = document.getElementById('exampleModal');
+  if (form && modalEl) {
+    form.addEventListener('submit', function (e) {
+      e.preventDefault();
+      form.querySelectorAll('.is-invalid').forEach(function (el) { el.classList.remove('is-invalid'); });
+      form.querySelectorAll('.invalid-feedback').forEach(function (el) { el.textContent = ''; });
+      var btn = form.querySelector('button[type="submit"]');
+      if (btn) { btn.disabled = true; }
+      var fd = new FormData(form);
+      fetch(window.location.pathname + window.location.search, {
+        method: 'POST',
+        body: fd,
+        headers: { 'X-Requested-With': 'XMLHttpRequest' }
+      }).then(function (r) {
+        return r.json().then(function (data) { return { ok: r.ok, data: data }; });
+      }).then(function (_a) {
+        var ok = _a.ok, data = _a.data;
+        if (btn) { btn.disabled = false; }
+        if (ok && data.success) {
+          var modal = bootstrap.Modal.getInstance(modalEl) || new bootstrap.Modal(modalEl);
+          modal.hide();
+          if (data.ws_status) applyStatus(data.ws_status);
+          if (data.last_update != null) {
+            var lu = document.getElementById('f2g-last-update');
+            if (lu) lu.textContent = lastUpdateLabel + ': ' + data.last_update;
+          }
+          if (data.table_rows_html != null) {
+            var tbody = document.getElementById('f2g-table-body');
+            if (tbody) tbody.innerHTML = data.table_rows_html;
+          }
+        } else if (!ok && data.errors) {
+          Object.keys(data.errors).forEach(function (k) {
+            var inp = form.querySelector('[name="' + k + '"]');
+            if (inp && data.errors[k] && data.errors[k].length) {
+              inp.classList.add('is-invalid');
+              var fb = inp.closest('.mb-3');
+              if (fb) {
+                var inv = fb.querySelector('.invalid-feedback');
+                if (!inv) { inv = document.createElement('div'); inv.className = 'invalid-feedback'; fb.appendChild(inv); }
+                inv.textContent = data.errors[k][0];
+              }
+            }
+          });
+        }
+      }).catch(function () {
+        if (btn) btn.disabled = false;
+      });
+    });
+  }
+})();
+</script>
 {% endblock %}
